@@ -31,18 +31,30 @@ interface ParserComparisonTestInterface {
   @Test
   fun compareSnippetTests() {
     getSnippets().forEach { snippet ->
-      val text = snippet.readText()
-      compare(text)
+      try {
+        compare(snippet)
+      } catch (e: ParserError) {
+        synchronized(System.out) { println("path: $snippet") }
+
+        throw e
+      }
     }
   }
 
   fun getSnippets(): List<Path>
 
+  fun compare(path: Path) {
+    val code = path.readText()
+    val (sexp, antlrExp) = renderBoth(code)
+    assertThat(sexp).`as`("path: $path").isEqualTo(antlrExp)
+  }
+
   fun compare(code: String) {
-    val sexp = renderCode(code)
-    val antlrExp = renderANTLRCode(code)
+    val (sexp, antlrExp) = renderBoth(code)
     assertThat(sexp).isEqualTo(antlrExp)
   }
+
+  fun renderBoth(code: String): Pair<String, String> = Pair(renderCode(code), renderANTLRCode(code))
 
   companion object {
     private fun renderCode(code: String): String {
