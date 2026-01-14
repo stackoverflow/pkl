@@ -27,6 +27,7 @@ import org.pkl.core.module.ModuleKey;
 import org.pkl.core.module.ResolvedModuleKey;
 import org.pkl.core.util.IoUtils;
 import org.pkl.core.util.Nullable;
+import org.pkl.core.util.PhaseTimer;
 import org.pkl.parser.Parser;
 import org.pkl.parser.ParserError;
 import org.pkl.parser.syntax.Module;
@@ -99,19 +100,32 @@ public final class VmLanguage extends TruffleLanguage<VmContext> {
     var parser = new Parser();
     Module moduleContext;
     var sourceStr = source.getCharacters().toString();
+
+    // Parse Pkl source to syntax tree
+    var parseStart = PhaseTimer.start();
     try {
       moduleContext = parser.parseModule(sourceStr);
     } catch (ParserError e) {
+      PhaseTimer.end(PhaseTimer.Phase.PARSING, parseStart);
       var moduleName = IoUtils.inferModuleName(moduleKey);
       MinPklVersionChecker.check(moduleName, e.getPartialParseResult(), importNode, sourceStr);
       throw VmUtils.toVmException(e, source, moduleName);
     }
+    PhaseTimer.end(PhaseTimer.Phase.PARSING, parseStart);
 
+    // Build Truffle AST from syntax tree
+    var astStart = PhaseTimer.start();
     var builder =
         AstBuilder.create(
             source, this, moduleContext, moduleKey, resolvedModuleKey, moduleResolver);
     var moduleNode = builder.visitModule(moduleContext);
+    PhaseTimer.end(PhaseTimer.Phase.AST_BUILDING, astStart);
+
+    // Execute module initialization
+    var initStart = PhaseTimer.start();
     moduleNode.getCallTarget().call(emptyModule, emptyModule);
+    PhaseTimer.end(PhaseTimer.Phase.MODULE_INIT, initStart);
+
     MinPklVersionChecker.check(emptyModule, importNode);
   }
 }

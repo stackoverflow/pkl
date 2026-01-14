@@ -43,6 +43,7 @@ import org.pkl.core.runtime.VmValueVisitor;
 import org.pkl.core.util.LateInit;
 import org.pkl.core.util.MutableBoolean;
 import org.pkl.core.util.Nullable;
+import org.pkl.core.util.PhaseTimer;
 
 public abstract class AbstractRenderer implements VmValueVisitor {
 
@@ -85,9 +86,14 @@ public abstract class AbstractRenderer implements VmValueVisitor {
   }
 
   public final void renderDocument(Object value) {
+    var renderStart = PhaseTimer.start();
     currPath = new ArrayDeque<>();
     currPath.push(VmValueConverter.TOP_LEVEL_VALUE);
+
+    var convStart = PhaseTimer.start();
     var converted = converter.convert(value, currPath);
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_CONVERSION, convStart);
+
     this.topLevelValue = converted;
     try {
       visitDocument(converted);
@@ -101,6 +107,8 @@ public abstract class AbstractRenderer implements VmValueVisitor {
         throw err;
       }
       throw err;
+    } finally {
+      PhaseTimer.end(PhaseTimer.Phase.RENDERING, renderStart);
     }
   }
 
@@ -179,9 +187,11 @@ public abstract class AbstractRenderer implements VmValueVisitor {
 
   @Override
   public void visitTyped(VmTyped value) {
+    var visitStart = PhaseTimer.start();
     // value.getParent().getMember(value);
     if (isRenderDirective(value)) {
       visitRenderDirective(value);
+      PhaseTimer.end(PhaseTimer.Phase.RENDER_VISIT_TYPED, visitStart);
       return;
     }
 
@@ -192,6 +202,7 @@ public abstract class AbstractRenderer implements VmValueVisitor {
     enclosingValue = value;
     var isFirst = new MutableBoolean(true);
 
+    var iterStart = PhaseTimer.start();
     value.iterateAlreadyForcedMemberValues(
         (memberKey, member, memberValue) -> {
           if (member.isClass() || member.isTypeAlias()) return true;
@@ -204,13 +215,16 @@ public abstract class AbstractRenderer implements VmValueVisitor {
               isFirst);
           return true;
         });
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_ITERATION, iterStart);
 
     enclosingValue = prevEnclosingValue;
     endTyped(value, isFirst.get());
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_VISIT_TYPED, visitStart);
   }
 
   @Override
   public final void visitDynamic(VmDynamic value) {
+    var visitStart = PhaseTimer.start();
     value.force(false, false);
     startDynamic(value);
 
@@ -219,6 +233,7 @@ public abstract class AbstractRenderer implements VmValueVisitor {
     var isFirst = new MutableBoolean(true);
     var canRenderPropertyOrEntry = canRenderPropertyOrEntryOf(value);
 
+    var iterStart = PhaseTimer.start();
     value.iterateAlreadyForcedMemberValues(
         (memberKey, member, memberValue) -> {
           var sourceSection = member.getSourceSection();
@@ -233,9 +248,11 @@ public abstract class AbstractRenderer implements VmValueVisitor {
           }
           return true;
         });
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_ITERATION, iterStart);
 
     enclosingValue = prevEnclosingValue;
     endDynamic(value, isFirst.get());
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_VISIT_DYNAMIC, visitStart);
   }
 
   protected boolean canRenderPropertyOrEntryOf(VmDynamic object) {
@@ -251,6 +268,7 @@ public abstract class AbstractRenderer implements VmValueVisitor {
 
   @Override
   public final void visitListing(VmListing value) {
+    var visitStart = PhaseTimer.start();
     value.force(false, false);
     startListing(value);
 
@@ -258,6 +276,7 @@ public abstract class AbstractRenderer implements VmValueVisitor {
     enclosingValue = value;
     var isFirst = new MutableBoolean(true);
 
+    var iterStart = PhaseTimer.start();
     value.iterateAlreadyForcedMemberValues(
         (memberKey, member, memberValue) -> {
           assert member.isElement();
@@ -265,13 +284,16 @@ public abstract class AbstractRenderer implements VmValueVisitor {
               (long) memberKey, memberValue, member.getSourceSection(), isFirst.getAndSetFalse());
           return true;
         });
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_ITERATION, iterStart);
 
     enclosingValue = prevEnclosingValue;
     endListing(value, isFirst.get());
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_VISIT_LISTING, visitStart);
   }
 
   @Override
   public final void visitMapping(VmMapping value) {
+    var visitStart = PhaseTimer.start();
     value.force(false, false);
     startMapping(value);
 
@@ -279,15 +301,18 @@ public abstract class AbstractRenderer implements VmValueVisitor {
     enclosingValue = value;
     var isFirst = new MutableBoolean(true);
 
+    var iterStart = PhaseTimer.start();
     value.iterateAlreadyForcedMemberValues(
         (memberKey, member, memberValue) -> {
           assert member.isEntry();
           doVisitEntry(memberKey, memberValue, member.getSourceSection(), isFirst);
           return true;
         });
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_ITERATION, iterStart);
 
     enclosingValue = prevEnclosingValue;
     endMapping(value, isFirst.get());
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_VISIT_MAPPING, visitStart);
   }
 
   @Override

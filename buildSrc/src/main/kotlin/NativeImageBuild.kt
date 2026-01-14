@@ -121,6 +121,8 @@ abstract class NativeImageBuild : DefaultTask() {
         add("--initialize-at-run-time=org.msgpack.core.buffer.DirectBufferAccess")
         // needed for jline-terminal-jni
         add("--initialize-at-run-time=org.jline.nativ,org.jline.terminal.impl.jni")
+        // PhaseTimer reads env vars at runtime for profiling support
+        add("--initialize-at-run-time=org.pkl.core.util.PhaseTimer")
         add("--no-fallback")
         add("-H:IncludeResources=org/pkl/core/stdlib/.*\\.pkl")
         add("-H:IncludeResources=org/jline/utils/.*")
@@ -130,9 +132,9 @@ abstract class NativeImageBuild : DefaultTask() {
         add("-H:Class=${mainClass.get()}")
         add("-o")
         add(imageName.get())
-        // the actual limit (currently) used by native-image is this number + 1400 (idea is to
-        // compensate for Truffle's own nodes)
-        add("-H:MaxRuntimeCompileMethods=1800")
+        // the actual limit (currently) used by native-image is this number + some offset
+        // (idea is to compensate for Truffle's own nodes)
+        add("-H:MaxRuntimeCompileMethods=3000")
         add("-H:+EnforceMaxRuntimeCompileMethods")
         add("--enable-url-protocols=http,https")
         add("-H:+ReportExceptionStackTraces")

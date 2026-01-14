@@ -19,6 +19,8 @@ import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.frame.FrameDescriptor;
+import com.oracle.truffle.api.nodes.IndirectCallNode;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.source.SourceSection;
 import java.util.*;
 import java.util.function.*;
@@ -43,7 +45,7 @@ import org.pkl.core.util.Nullable;
 // The currently implemented (and likely insufficient) solution is to
 // * deeply force standard library modules at initialization time.
 // * ensure that any further mutation (e.g., lazy initialization in VmClass) is thread-safe.
-public final class VmClass extends VmValue {
+public final class VmClass implements VmValue {
   private final SourceSection sourceSection;
   private final SourceSection headerSection;
   private final SourceSection @Nullable [] docComment;
@@ -122,6 +124,39 @@ public final class VmClass extends VmValue {
   private EconomicMap<Object, ObjectMember> __mapToTypedMembers;
 
   private final Object mapToTypedMembersLock = new Object();
+
+  // Shape for instances of this class - used for Truffle's Dynamic Object Model
+  @LateInit
+  @GuardedBy("instanceShapeLock")
+  private Shape __instanceShape;
+
+  private final Object instanceShapeLock = new Object();
+
+  // Forcible member arrays for PE-optimized forcing.
+  // These are computed once per class and shared by all instances.
+  // Using parallel arrays instead of a record array for better cache locality.
+  @LateInit
+  @GuardedBy("forcibleMembersLock")
+  private Object[] __forcibleMemberKeys;
+
+  @LateInit
+  @GuardedBy("forcibleMembersLock")
+  private ObjectMember[] __forcibleMembers;
+
+  @LateInit
+  @GuardedBy("forcibleMembersLock")
+  private ClassProperty[] __forcibleClassProperties;
+
+  private final Object forcibleMembersLock = new Object();
+
+  /**
+   * Cached IndirectCallNode for force() operations.
+   *
+   * <p>Using a cached node instead of {@code IndirectCallNode.getUncached()} avoids the overhead of
+   * looking up dispatch targets on every call. This is especially important in native builds where
+   * there's no JIT to optimize the dispatch path.
+   */
+  private final IndirectCallNode cachedCallNode = IndirectCallNode.create();
 
   public VmClass(
       SourceSection sourceSection,
@@ -695,6 +730,142 @@ public final class VmClass extends VmValue {
       }
       return __allMethods;
     }
+  }
+
+  /**
+   * Returns the Truffle Shape for instances of this class.
+   *
+   * <p>The shape is lazily initialized from the root shape. Instance shapes are used by the Dynamic
+   * Object Model to provide optimized property storage and inline caching for cached property
+   * values.
+   *
+   * <p>Note: This returns the base shape for instances. Individual instances may have different
+   * shapes due to shape transitions when properties are cached.
+   */
+  public Shape getInstanceShape() {
+    synchronized (instanceShapeLock) {
+      if (__instanceShape == null) {
+        __instanceShape = buildInstanceShape();
+      }
+      return __instanceShape;
+    }
+  }
+
+  @TruffleBoundary
+  private Shape buildInstanceShape() {
+    // Start with the superclass shape if available, otherwise use root shape
+    if (superclass != null) {
+      return superclass.getInstanceShape();
+    }
+    return PklShape.getRootShape();
+  }
+
+  /**
+   * Returns the cached IndirectCallNode for force() operations.
+   *
+   * <p>This node is shared by all instances of this class and avoids the overhead of {@code
+   * IndirectCallNode.getUncached()} which performs a lookup on every call.
+   */
+  public IndirectCallNode getCachedCallNode() {
+    return cachedCallNode;
+  }
+
+  /**
+   * Returns the forcible member keys for this class.
+   *
+   * <p>Computed lazily on first access by walking the prototype chain. The result is cached and
+   * shared by all instances of this class.
+   *
+   * @return array of member keys that need forcing
+   */
+  public Object[] getForcibleMemberKeys() {
+    synchronized (forcibleMembersLock) {
+      if (__forcibleMemberKeys == null) {
+        computeForcibleMembers();
+      }
+      return __forcibleMemberKeys;
+    }
+  }
+
+  /**
+   * Returns the forcible ObjectMembers for this class.
+   *
+   * <p>Parallel array to {@link #getForcibleMemberKeys()}.
+   *
+   * @return array of ObjectMember definitions
+   */
+  public ObjectMember[] getForcibleMembers() {
+    synchronized (forcibleMembersLock) {
+      if (__forcibleMembers == null) {
+        computeForcibleMembers();
+      }
+      return __forcibleMembers;
+    }
+  }
+
+  /**
+   * Returns the ClassProperty for each forcible member (for type checking).
+   *
+   * <p>Parallel array to {@link #getForcibleMemberKeys()}. Elements may be null if the member has
+   * no type annotation.
+   *
+   * @return array of ClassProperty (nullable elements)
+   */
+  public ClassProperty[] getForcibleClassProperties() {
+    synchronized (forcibleMembersLock) {
+      if (__forcibleClassProperties == null) {
+        computeForcibleMembers();
+      }
+      return __forcibleClassProperties;
+    }
+  }
+
+  /**
+   * Computes the forcible member arrays for this class.
+   *
+   * <p>Walks the prototype chain from the class prototype to the root, collecting members that need
+   * forcing (not local, external, abstract, or hidden).
+   */
+  @TruffleBoundary
+  private void computeForcibleMembers() {
+    var visited = new HashSet<Object>();
+    var keys = new ArrayList<Object>();
+    var members = new ArrayList<ObjectMember>();
+    var classProperties = new ArrayList<ClassProperty>();
+
+    // Walk prototype chain from this class's prototype to root
+    for (VmObjectLike owner = prototype; owner != null; owner = owner.getParent()) {
+      var cursor = EconomicMaps.getEntries(owner.getMembers());
+      var ownerClass = owner.getVmClass();
+
+      while (cursor.advance()) {
+        var memberKey = cursor.getKey();
+        var member = cursor.getValue();
+
+        // Skip if already visited (shadowed by closer definition)
+        if (!visited.add(memberKey)) continue;
+
+        // Skip local, external, abstract members
+        if (member.isLocalOrExternalOrAbstract()) continue;
+
+        // Skip hidden properties
+        if (ownerClass.isHiddenProperty(memberKey)) continue;
+
+        // Look up ClassProperty for type checking (only for property members)
+        ClassProperty classProperty = null;
+        if (member.isProp()) {
+          classProperty = getProperty(member.getName());
+        }
+
+        keys.add(memberKey);
+        members.add(member);
+        classProperties.add(classProperty);
+      }
+    }
+
+    __forcibleMemberKeys = keys.toArray();
+    __forcibleMembers = members.toArray(ObjectMember[]::new);
+    __forcibleClassProperties = classProperties.toArray(ClassProperty[]::new);
   }
 
   /**

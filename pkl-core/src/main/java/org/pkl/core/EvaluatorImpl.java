@@ -57,6 +57,7 @@ import org.pkl.core.runtime.VmValue;
 import org.pkl.core.runtime.VmValueRenderer;
 import org.pkl.core.util.ErrorMessages;
 import org.pkl.core.util.Nullable;
+import org.pkl.core.util.PhaseTimer;
 
 public final class EvaluatorImpl implements Evaluator {
   private final StackFrameTransformer frameTransformer;
@@ -427,9 +428,16 @@ public final class EvaluatorImpl implements Evaluator {
   private <T> T doEvaluate(ModuleSource moduleSource, Function<VmTyped, T> doEvaluate) {
     return doEvaluate(
         () -> {
+          var resolveStart = PhaseTimer.start();
           var moduleKey = moduleResolver.resolve(moduleSource);
+          PhaseTimer.end(PhaseTimer.Phase.MODULE_RESOLUTION, resolveStart);
+
           var module = VmLanguage.get(null).loadModule(moduleKey);
-          return doEvaluate.apply(module);
+
+          var evalStart = PhaseTimer.start();
+          var result = doEvaluate.apply(module);
+          PhaseTimer.end(PhaseTimer.Phase.EVALUATION, evalStart);
+          return result;
         });
   }
 

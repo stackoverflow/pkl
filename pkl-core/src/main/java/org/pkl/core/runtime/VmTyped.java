@@ -19,6 +19,9 @@ import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.instrumentation.InstrumentableNode.WrapperNode;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
+import com.oracle.truffle.api.object.Shape;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.pkl.core.Composite;
@@ -26,22 +29,123 @@ import org.pkl.core.PModule;
 import org.pkl.core.PObject;
 import org.pkl.core.ast.ExpressionNode;
 import org.pkl.core.ast.expression.unary.ImportNode;
+import org.pkl.core.ast.member.ForceTypedNode;
 import org.pkl.core.ast.member.ObjectMember;
 import org.pkl.core.util.EconomicMaps;
 import org.pkl.core.util.LateInit;
 import org.pkl.core.util.Nullable;
+import org.pkl.core.util.PhaseTimer;
 
 public final class VmTyped extends VmObject {
   @CompilationFinal @LateInit private VmClass clazz;
 
+  /**
+   * Creates a new VmTyped with the class's instance shape.
+   *
+   * @param enclosingFrame the frame that was active when this object was instantiated
+   * @param parent the parent in the prototype chain, or null
+   * @param clazz the class of this object, or null if it will be late-initialized
+   * @param members the declared members of this object
+   */
   public VmTyped(
       MaterializedFrame enclosingFrame,
       @Nullable VmTyped parent,
       // null -> will be initialized using lateInitVmClass() later
       @Nullable VmClass clazz,
       UnmodifiableEconomicMap<Object, ObjectMember> members) {
-    super(enclosingFrame, parent, members);
+    this(enclosingFrame, parent, clazz, members, getShapeForClass(clazz));
+  }
+
+  /**
+   * Creates a new VmTyped with a custom shape.
+   *
+   * <p>This constructor is used when a specific shape is needed, such as when amending an object
+   * where the shape may differ from the class's base instance shape.
+   *
+   * @param enclosingFrame the frame that was active when this object was instantiated
+   * @param parent the parent in the prototype chain, or null
+   * @param clazz the class of this object, or null if it will be late-initialized
+   * @param members the declared members of this object
+   * @param shape the Truffle shape for this object's cached value storage
+   */
+  public VmTyped(
+      MaterializedFrame enclosingFrame,
+      @Nullable VmTyped parent,
+      @Nullable VmClass clazz,
+      UnmodifiableEconomicMap<Object, ObjectMember> members,
+      Shape shape) {
+    super(shape, enclosingFrame, parent, members);
     this.clazz = clazz;
+    // Pre-allocate cache slots for all members to stabilize the shape.
+    // This ensures all instances with the same members share the same shape,
+    // enabling monomorphic inline caching for property access.
+    preallocateCacheSlots(members);
+  }
+
+  /**
+   * Pre-allocates cache slots for all members by putting null values. This creates shape
+   * transitions upfront so all instances share the same final shape.
+   *
+   * <p>Note: Local properties are NOT pre-allocated here. They use a separate IdentityHashMap
+   * (inherited from VmObject) to avoid shape transitions from ObjectMember keys.
+   */
+  private void preallocateCacheSlots(UnmodifiableEconomicMap<Object, ObjectMember> members) {
+    var library = DynamicObjectLibrary.getUncached();
+    var cursor = members.getEntries();
+    while (cursor.advance()) {
+      // Pre-allocate slot using the member's name as key
+      library.put(this, cursor.getKey(), null);
+    }
+  }
+
+  private static Shape getShapeForClass(@Nullable VmClass clazz) {
+    return clazz != null ? clazz.getInstanceShape() : PklShape.getRootShape();
+  }
+
+  // Optimized cached value operations using provided DynamicObjectLibrary
+  // These methods enable PE-friendly property access when used with @CachedLibrary
+
+  /**
+   * Returns this object for cached value storage.
+   *
+   * <p>This allows callers to use {@link DynamicObjectLibrary} directly for PE-optimized property
+   * access via {@code @CachedLibrary}.
+   */
+  public DynamicObject getCachedValuesStorage() {
+    return this;
+  }
+
+  /**
+   * Gets a cached value using the provided library for PE-optimized access.
+   *
+   * @param key the property key
+   * @param library the DynamicObjectLibrary to use (should be cached via @CachedLibrary)
+   * @return the cached value, or null if not present
+   */
+  public @Nullable Object getCachedValue(Object key, DynamicObjectLibrary library) {
+    return library.getOrDefault(this, key, null);
+  }
+
+  /**
+   * Sets a cached value using the provided library for PE-optimized access.
+   *
+   * @param key the property key
+   * @param value the value to cache
+   * @param library the DynamicObjectLibrary to use (should be cached via @CachedLibrary)
+   */
+  public void setCachedValue(Object key, Object value, DynamicObjectLibrary library) {
+    library.put(this, key, value);
+  }
+
+  /**
+   * Checks if a cached value exists using the provided library for PE-optimized access.
+   *
+   * @param key the property key
+   * @param library the DynamicObjectLibrary to use (should be cached via @CachedLibrary)
+   * @return true if a value is cached for this key
+   */
+  public boolean hasCachedValue(Object key, DynamicObjectLibrary library) {
+    return library.containsKey(this, key);
   }
 
   public void lateInitVmClass(VmClass clazz) {
@@ -60,6 +164,33 @@ public final class VmTyped extends VmObject {
   public VmClass getVmClass() {
     assert clazz != null : "VmTyped.clazz was not initialized.";
     return clazz;
+  }
+
+  /**
+   * Forces all members of this object using PE-optimized iteration.
+   *
+   * <p>Uses class-level forcible member key arrays for better cache locality. The actual member
+   * values are read via {@link VmUtils#readMemberOrNull} which correctly handles the receiver's
+   * prototype chain regardless of whether this is the prototype, an instance, or an amended object.
+   *
+   * @param allowUndefinedValues if true, undefined values are skipped; if false, they throw
+   * @param recurse if true, recursively force member values
+   */
+  @Override
+  public void force(boolean allowUndefinedValues, boolean recurse) {
+    if (isForced()) return;
+
+    if (recurse) setForced(true);
+
+    var forceStart = PhaseTimer.start();
+    try {
+      ForceTypedNode.getCallTarget().call(this, allowUndefinedValues, recurse);
+    } catch (Throwable t) {
+      setForced(false);
+      throw t;
+    } finally {
+      PhaseTimer.end(PhaseTimer.Phase.VMOBJECT_FORCE, forceStart);
+    }
   }
 
   public @Nullable VmTyped getParent() {

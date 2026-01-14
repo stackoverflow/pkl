@@ -1,5 +1,5 @@
 /*
- * Copyright © 2024-2025 Apple Inc. and the Pkl project authors. All rights reserved.
+ * Copyright © 2024-2026 Apple Inc. and the Pkl project authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package org.pkl.core.util.yaml;
 
 import java.util.Base64;
+import org.pkl.core.util.PhaseTimer;
 
 // Useful links:
 // https://yaml-online-parser.appspot.com
@@ -43,8 +44,10 @@ public abstract class YamlEmitter {
   }
 
   public void emit(String str, StringBuilder currIndent, boolean isKey) {
+    var emitStart = PhaseTimer.start();
     if (isReservedWord(str)) {
       emitSingleQuotedString(str, -1);
+      PhaseTimer.end(PhaseTimer.Phase.RENDER_STRING_EMIT, emitStart);
       return;
     }
 
@@ -193,6 +196,7 @@ public abstract class YamlEmitter {
     if (isKey && (builder.length() - pos > 1024 || !needsEscaping && newlineIndex != -1)) {
       builder.insert(pos, "? ").append('\n').append(currIndent);
     }
+    PhaseTimer.end(PhaseTimer.Phase.RENDER_STRING_EMIT, emitStart);
   }
 
   public final void emit(long value) {

@@ -41,6 +41,7 @@ import org.pkl.core.runtime.ModuleResolver
 import org.pkl.core.runtime.VmException
 import org.pkl.core.runtime.VmUtils
 import org.pkl.core.util.IoUtils
+import org.pkl.core.util.PhaseTimer
 
 private data class OutputFile(val pathSpec: String, val moduleUri: URI)
 
@@ -97,6 +98,8 @@ constructor(
    * Throws [CliException] in case of an error.
    */
   override fun doRun() {
+    PhaseTimer.startRun()
+    val totalStart = PhaseTimer.start()
     val builder = evaluatorBuilder()
     try {
       if (options.multipleFileOutputPath != null) {
@@ -107,6 +110,8 @@ constructor(
     } finally {
       Closeables.closeQuietly(builder.moduleKeyFactories)
       Closeables.closeQuietly(builder.resourceReaders)
+      PhaseTimer.end(PhaseTimer.Phase.TOTAL, totalStart)
+      PhaseTimer.endRun()
     }
   }
 
@@ -170,15 +175,19 @@ constructor(
             )
           }
           val output = ev.evalOutput(moduleSource)
+          val ioStart = PhaseTimer.start()
           outputFile.createParentDirectories()
           if (!writtenFiles.contains(outputFile)) {
             // write file even if output is empty to overwrite output from previous runs
             outputFile.writeBytes(output)
+            PhaseTimer.end(PhaseTimer.Phase.FILE_IO, ioStart)
             if (output.isNotEmpty()) {
               writtenFiles.add(outputFile)
             }
           } else {
+            PhaseTimer.end(PhaseTimer.Phase.FILE_IO, ioStart)
             if (output.isNotEmpty()) {
+              val appendStart = PhaseTimer.start()
               outputFile.writeString(
                 options.moduleOutputSeparator + '\n',
                 Charsets.UTF_8,
@@ -186,6 +195,7 @@ constructor(
                 StandardOpenOption.APPEND,
               )
               outputFile.writeBytes(output, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
+              PhaseTimer.end(PhaseTimer.Phase.FILE_IO, appendStart)
             }
           }
         }
@@ -258,8 +268,10 @@ constructor(
           )
         }
         writtenFiles[realPath] = OutputFile(pathSpec, moduleUri)
+        val ioStart = PhaseTimer.start()
         realPath.createParentDirectories()
         realPath.writeBytes(fileOutput.bytes)
+        PhaseTimer.end(PhaseTimer.Phase.FILE_IO, ioStart)
         outputStream.writeText(
           IoUtils.relativize(resolvedPath, currentWorkingDir).toString() +
             IoUtils.getLineSeparator()

@@ -21,6 +21,7 @@ import org.pkl.core.runtime.*;
 import org.pkl.core.stdlib.AbstractStringRenderer;
 import org.pkl.core.stdlib.ExternalMethod1Node;
 import org.pkl.core.stdlib.PklConverter;
+import org.pkl.core.util.PhaseTimer;
 import org.pkl.core.util.json.JsonEscaper;
 
 public final class JsonRendererNodes {
@@ -80,9 +81,11 @@ public final class JsonRendererNodes {
     /** Use same escaping strategy as {@link org.pkl.core.util.json.JsonWriter}. */
     @Override
     public void visitString(String value) {
+      var emitStart = PhaseTimer.start();
       builder.append('"');
       escaper.escape(value, builder);
       builder.append('"');
+      PhaseTimer.end(PhaseTimer.Phase.RENDER_STRING_EMIT, emitStart);
     }
 
     @Override
