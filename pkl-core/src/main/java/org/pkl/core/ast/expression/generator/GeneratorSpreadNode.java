@@ -1,5 +1,5 @@
 /*
- * Copyright © 2024-2025 Apple Inc. and the Pkl project authors. All rights reserved.
+ * Copyright © 2024-2026 Apple Inc. and the Pkl project authors. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -189,47 +189,51 @@ public abstract class GeneratorSpreadNode extends GeneratorMemberNode {
   }
 
   protected void doEvalDynamic(VirtualFrame frame, ObjectData data, VmObject iterable) {
+    var materializedFrame = frame.materialize();
     iterable.forceAndIterateMemberValues(
         (key, member, value) -> {
           if (member.isElement()) {
-            data.addElement(frame, createMember(member, value), this);
+            data.addElement(materializedFrame, createMember(member, value), this);
           } else {
-            data.addMember(frame, key, createMember(member, value), this);
+            data.addMember(materializedFrame, key, createMember(member, value), this);
           }
           return true;
         });
   }
 
   private void doEvalMapping(VirtualFrame frame, ObjectData data, VmObject iterable) {
+    var materializedFrame = frame.materialize();
     iterable.forceAndIterateMemberValues(
         (key, member, value) -> {
           if (member.isElement() || member.isProp()) {
             cannotHaveMember(BaseModule.getMappingClass(), member);
           }
-          data.addMember(frame, key, createMember(member, value), this);
+          data.addMember(materializedFrame, key, createMember(member, value), this);
           return true;
         });
   }
 
   private void doEvalListing(VirtualFrame frame, ObjectData data, VmObject iterable) {
+    var materializedFrame = frame.materialize();
     iterable.forceAndIterateMemberValues(
         (key, member, value) -> {
           if (member.isEntry() || member.isProp()) {
             cannotHaveMember(getListingClass(), member);
           }
-          data.addElement(frame, createMember(member, value), this);
+          data.addElement(materializedFrame, createMember(member, value), this);
           return true;
         });
   }
 
   private void doEvalTyped(VirtualFrame frame, VmClass clazz, ObjectData data, VmObject iterable) {
+    var materializedFrame = frame.materialize();
     iterable.forceAndIterateMemberValues(
         (key, member, value) -> {
           if (member.isElement() || member.isEntry()) {
             cannotHaveMember(clazz, member);
           }
           checkIsValidTypedProperty(clazz, member);
-          data.addProperty(frame, createMember(member, value), this);
+          data.addProperty(materializedFrame, createMember(member, value), this);
           return true;
         });
   }

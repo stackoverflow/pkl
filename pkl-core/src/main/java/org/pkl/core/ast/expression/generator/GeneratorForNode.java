@@ -149,13 +149,14 @@ public abstract class GeneratorForNode extends GeneratorMemberNode {
   }
 
   private void doEvalObject(VirtualFrame frame, VmObject iterable, Object parent, ObjectData data) {
+    var materializedFrame = frame.materialize();
     iterable.forceAndIterateMemberValues(
         (key, member, value) -> {
           var convertedKey = member.isProp() ? key.toString() : key;
           // TODO: Executing iteration behind a Truffle boundary is bad for performance.
           // This and similar cases will be fixed in an upcoming PR that replaces method
           // `(forceAnd)iterateMemberValues` with cursor-based external iterators.
-          executeIteration(frame, parent, data, convertedKey, value);
+          executeIteration(materializedFrame, parent, data, convertedKey, value);
           return true;
         });
   }
