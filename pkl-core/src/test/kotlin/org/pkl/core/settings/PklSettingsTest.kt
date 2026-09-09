@@ -17,6 +17,7 @@ package org.pkl.core.settings
 
 import java.net.URI
 import java.nio.file.Path
+import java.util.Base64
 import kotlin.io.path.createParentDirectories
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatCode
@@ -173,6 +174,60 @@ class PklSettingsTest {
       .hasMessageContaining(
         "Expected `output.value` of module `${settingsFile.toUri()}` to be of type `pkl.settings`, but got type `settings`."
       )
+  }
+
+  @Test
+  fun `load user settings with netRcHeaders`(@TempDir tempDir: Path) {
+    val netrcFile = tempDir.resolve(".netrc")
+    netrcFile.writeString(
+      """
+      machine github.com
+        login octocat
+        password secret_pass
+      """
+        .trimIndent()
+    )
+
+    val settingsPath = tempDir.resolve("settings.pkl")
+    settingsPath.writeString(
+      """
+      amends "pkl:settings"
+
+      http {
+        headers = netRcHeaders(read("${netrcFile.toUri()}"))
+      }
+      """
+        .trimIndent()
+    )
+
+    val settings = PklSettings.load(ModuleSource.path(settingsPath))
+    val expectedAuth =
+      "Basic " + Base64.getEncoder().encodeToString("octocat:secret_pass".toByteArray())
+    val expectedHttp =
+      PklEvaluatorSettings.Http(
+        null,
+        null,
+        mapOf("http{,s}://github.com/**" to mapOf("Authorization" to listOf(expectedAuth))),
+      )
+
+    assertThat(settings.http()).isEqualTo(expectedHttp)
+  }
+
+  @Test
+  fun `test import EvaluatorSettings`() {
+    val evaluator = Evaluator.preconfigured()
+    val module =
+      evaluator.evaluate(
+        ModuleSource.text(
+          """
+          import "pkl:EvaluatorSettings"
+
+          res = (new EvaluatorSettings.Http {}).netRcHeaders("")
+          """
+            .trimIndent()
+        )
+      )
+    assertThat(module.getProperty("res")).isNotNull
   }
 
   private fun checkEquals(expected: Editor, actual: PObject) {
