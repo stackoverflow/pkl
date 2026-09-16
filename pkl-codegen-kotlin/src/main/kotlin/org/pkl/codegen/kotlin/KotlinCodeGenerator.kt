@@ -699,6 +699,7 @@ class KotlinCodeGenerator(
           PClassInfo.Class -> PCLASS
           PClassInfo.Regex -> REGEX
           PClassInfo.Version -> VERSION
+          PClassInfo.Url -> URI
           else ->
             when {
               !classInfo.isStandardLibraryClass -> pClass.toKotlinPoetName()
